@@ -107,9 +107,9 @@ sudo /etc/init.d/rabbitmq-server stop
 ## 启用前台管理面板
 rabbitmq-plugins enable rabbitmq_management
 ```
-后端端口5672  
-前台访问`localhost:15672`  
-账号、密码为guest
+后端端口: 5672  
+前台访问: **localhost:15672**  
+账号、密码均为: guest
 
 
 # 1.Hello World!
@@ -126,6 +126,7 @@ rabbitmq是一个消息代理，作为一个**消息中间件**，作用是**转
 python -m pip install pika --upgrade
 ```
 
+### 发送消息
 1.连接rabbitmq  
 ```python
 #!/usr/bin/env python
@@ -137,3 +138,59 @@ channel = connection.channel
 ```
 
 2.声明队列
+```python
+channel.queue_declare(queue="hello")
+```
+
+3.指定交换机和队列名称  
+交换机`exchange`，空字符串指定**默认交换**  
+队列名称`routing_key`，命名为hello  
+消息主体message`body`，传入字符串Hello World!
+```python
+channel.basic_publish(exchange='',
+                      routing_key='hello',
+                      body='Hello World!')
+print(" [x] Sent 'Hello World!'")
+```
+
+4.关闭连接
+```
+connection.close()
+```
+
+### 接收消息
+1.连接及声明队列  
+同样连接一样
+```python
+#!/usr/bin/env python
+
+import pika
+
+connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
+channel = connection.channel
+
+channel.queue_declare("hello")
+```
+命令行查看队列及消息情况
+```sh
+## linux
+sudo rabbitmqctl list_queues
+## windows
+rabbitmqctl list_queues
+```
+
+2.订阅消息  
+`callback`向队列订阅函数
+```python
+## 定义回调函数
+def callback(ch, method, properties, body):
+    print(f"[x] Received {body}")
+## 关联队列
+channel.basic_consume(
+        queue="hello", auto_ack=True, on_message_callback=callback)
+## 循环，等待数据，并运行回调
+print(' [*] Waiting for messages. To exit press CTRL+C')
+channel.start_consuming()
+```
+
+# 2.工作队列
