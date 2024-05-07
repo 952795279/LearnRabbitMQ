@@ -1,17 +1,20 @@
-#! /usr/bin/env python
-
+#!/usr/bin/env python
 import pika
 import sys
 
-connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
+connection = pika.BlockingConnection(
+    pika.ConnectionParameters(host='localhost'))
 channel = connection.channel()
 
-# 声明队列
-channel.queue_declare(queue="hello")
+channel.queue_declare(queue='task_queue', durable=True)
 
-# 指定交换机和队列名称
-message = " ".join(sys.argv[1:]) or "Hello World!"
-channel.basic_publish(exchange='', routing_key="hello", body=message)
-
+message = ' '.join(sys.argv[1:]) or "Hello World!"
+channel.basic_publish(
+    exchange='',
+    routing_key='task_queue',
+    body=message,
+    properties=pika.BasicProperties(
+        delivery_mode=pika.DeliveryMode.Persistent
+    ))
 print(f" [x] Sent {message}")
 connection.close()
