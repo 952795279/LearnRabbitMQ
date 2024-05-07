@@ -320,4 +320,100 @@ windows上去掉sudo:
 rabbitmqctl.bat list_queues name messages_ready messages_unacknowledged
 ```
 
-## 2.4 消息持久性
+## 2.4 消息持久性  
+
+我们已经学会了如何确保即使消费者死亡，任务也不会丢失。但是如果 RabbitMQ 服务器停止，我们的任务仍然会丢失。  
+
+当 RabbitMQ 退出或崩溃时，它会忘记队列和消息，除非您告诉它不要这样做。要确保消息不丢失，需要做两件事：我们需要将队列和消息标记为持久的。  
+
+首先，我们需要确保队列能够在 RabbitMQ 节点重新启动后继续存在。为此，我们需要将其声明为持久的：  
+
+```python
+channel.queue_declare(queue='hello', durable=True)
+```
+
+尽管这个命令本身是正确的，但它在我们的设置中不起作用。那是因为我们已经定义了一个名为 which 的队列，hello 它是不持久的。 RabbitMQ 不允许您使用不同的参数重新定义现有队列，并将向任何尝试执行此操作的程序返回错误。但有一个快速的解决方法 - 让我们声明一个具有不同名称的队列，例如task_queue：  
+```python
+channel.queue_declare(queue='task_queue', durable=True)
+```
+
+此queue_declare更改需要应用于生产者和消费者代码。  
+
+此时我们可以确定，task_queue即使 RabbitMQ 重新启​​动，队列也不会丢失。现在我们需要将消息标记为持久性 - 通过提供一个delivery_mode具有以下值的属性pika.DeliveryMode.Persistent  
+```python
+channel.basic_publish(exchange='',
+                      routing_key="task_queue",
+                      body=message,
+                      properties=pika.BasicProperties(
+                         delivery_mode = pika.DeliveryMode.Persistent
+                      ))
+```
+
+**关于消息持久性**
+将消息标记为持久并不能完全保证消息不会丢失。尽管它告诉 RabbitMQ 将消息保存到磁盘，但 RabbitMQ 已接受消息但尚未保存的时间窗口仍然很短。此外，RabbitMQ 并不处理fsync(2)每条消息——它可能只是保存到缓存中，而不是真正写入磁盘。持久性保证并不强，但对于我们简单的任务队列来说已经足够了。如果您需要更强的保证，那么您可以使用 <a href="https://www.rabbitmq.com/docs/confirms">publisher recognizes。</a>  
+
+## 2.5 公平调度
+
+您可能已经注意到，调度仍然没有完全按照我们想要的方式工作。例如，在有两名工作人员的情况下，当所有奇数消息都很重而偶数消息都很轻时，一名工作人员将一直忙碌，而另一名工作人员几乎不会做任何工作。好吧，RabbitMQ 对此一无所知，并且仍然会均匀地分发消息。  
+
+发生这种情况是因为 RabbitMQ 只是在消息进入队列时才调度该消息。它不会查看消费者未确认消息的数量。它只是盲目地将每条第 n 条消息分派给第 n 个消费者。  
+
+为了克服这个问题，我们可以使用Channel#basic_qos通道方法进行 prefetch_count=1设置。这使用basic.qos协议方法告诉 RabbitMQ 不要一次向工作人员提供多于一条消息。或者，换句话说，在工作人员处理并确认前一条消息之前，不要向工作人员发送新消息。相反，它会将其分派给下一个不忙的工作人员。  
+```python
+channel.basic_qos(prefetch_count=1)
+```
+
+**关于队列大小**  
+如果所有工作人员都很忙，您的队列可能会被填满。您需要密切关注这一点，也许添加更多工作人员，或者使用<a href="https://www.rabbitmq.com/docs/ttl">消息 TTL</a>。  
+
+## 2.6 把他们放在一起
+new_task.py（来源）  
+```python
+#!/usr/bin/env python
+import pika
+import sys
+
+connection = pika.BlockingConnection(
+    pika.ConnectionParameters(host='localhost'))
+channel = connection.channel()
+
+channel.queue_declare(queue='task_queue', durable=True)
+
+message = ' '.join(sys.argv[1:]) or "Hello World!"
+channel.basic_publish(
+    exchange='',
+    routing_key='task_queue',
+    body=message,
+    properties=pika.BasicProperties(
+        delivery_mode=pika.DeliveryMode.Persistent
+    ))
+print(f" [x] Sent {message}")
+connection.close()
+```
+
+worker.py（来源）
+```python
+#!/usr/bin/env python
+import pika
+import time
+
+connection = pika.BlockingConnection(
+    pika.ConnectionParameters(host='localhost'))
+channel = connection.channel()
+
+channel.queue_declare(queue='task_queue', durable=True)
+print(' [*] Waiting for messages. To exit press CTRL+C')
+
+
+def callback(ch, method, properties, body):
+    print(f" [x] Received {body.decode()}")
+    time.sleep(body.count(b'.'))
+    print(" [x] Done")
+    ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+channel.basic_qos(prefetch_count=1)
+channel.basic_consume(queue='task_queue', on_message_callback=callback)
+
+channel.start_consuming()
+```
